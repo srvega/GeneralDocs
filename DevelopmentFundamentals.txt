@@ -1,0 +1,216 @@
+This is meant to be used as a guideline.  This is not meant to be argued with; it's meant to enable you to cut down the amount of time you spend fighting fires.  Ignore these suggestions at your own risk.
+Database table design/SQL:
+
+Large SQL statements are easier to read if all reserved words are typed in uppercase.
+
+All tables should have a primary key (PK) ID column, with type set to identity(1,1).  If the identity type is not available, use integer- and manage it with a sequence. ID column name should use the table name.
+Ex: if SAMPLETABLE is the table name, SampleTableID or SAMPLE_TABLE_ID should be the ID column name.
+
+NEVER make the primary key ID column of a table rely on the data of another table. Create the primary key ID column first, then create another column to use as the foreign key to/from another table.  This keeps you from having to jump through hoops to create new records or select a unique row for update.  It also prevents the errors you’d get when attempting to delete a single record in 1 place.
+
+Primary key ID columns should ONLY be populated by triggers that select from sequences or by the database engine itself.  If the PK ID column type is identity, the database engine will populate this and manage it for you.  Primary key ID column values should NEVER be available for editing by procedures or users.  Primary Key ID column values should be managed by triggers on the table that fire on every insert and update, to ensure that the value is pulled from the column's sequence, and overrides any user specified value for the ID column.
+Ex (oracle): 
+CREATE TABLE PRODDATABASE.DocAmendment
+(DocAmendmentID NUMBER(4) PRIMARY KEY NOT NULL,
+AmendmentSummary VARCHAR(500) DEFAULT ' ' NOT NULL,
+AmendmentDetail VARCHAR(1000) DEFAULT ' ' NOT NULL,
+SortRank NUMBER(3) DEFAULT 0 NOT NULL,
+ActiveFromDate DATE DEFAULT SYSDATE NOT NULL,
+ActiveToDate DATE DEFAULT SYSDATE-1,
+CreatedBy VARCHAR(40) DEFAULT ' ' NOT NULL,
+CreatedDate DATE DEFAULT SYSDATE NOT NULL,
+UpdatedBy VARCHAR(40) DEFAULT ' ' NOT NULL,
+UpdatedDate DATE DEFAULT SYSDATE NOT NULL
+);
+
+CREATE SEQUENCE PRODDATABASE.DocAmendmentID_SEQ START WITH 1 INCREMENT BY 1 NOCYCLE;
+
+CREATE OR REPLACE TRIGGER PRODDATABASE.DocAmendmentID_TR
+ BEFORE INSERT OR UPDATE ON DocAmendment
+ FOR EACH ROW
+BEGIN
+ IF INSERTING THEN
+	SELECT DocAmendmentID_SEQ.NEXTVAL INTO :NEW.DocAmendmentID FROM DUAL;
+ ELSE
+	SELECT
+ 	:OLD.DocAmendmentID,
+ 	:OLD.CreatedDate,
+ 	SYSDATE
+	INTO
+ 	:NEW.DocAmendmentID,
+ 	:NEW.CreatedDate,
+     	:NEW.UpdatedDate
+	FROM DUAL;
+ END IF;
+END;
+
+Primary key ID should NEVER be specified in sql statements for inserts, and should be the only thing specified for deletes.
+
+Specify default values for all columns in a table. NULLS in a database are bad form, and require validation or translation logic to be written into every single application that will EVER touch that table’s data. This can encourage inconsistencies with how to translate null values between applications. Default all date columns to sysdate or min/max date values, all integers to 0, varchars to empty strings. Oracle will implicitly convert empty strings to NULL.  You'll have to default those to a single space in the table, and then trim that column's value in code where necessary (which is a disgusting hack, but required to prevent errors by applications that are sloppily consuming the NULL data).
+
+Avoid columns that do not perform a function for the vast majority of the rows in the table.  Table columns that are 90% NULL or default values do not provide benefit for the storage space used. At the same time, you want to design the table in a way that, 10 years from now, the function it was originally built for can still be satisfied, despite having no old data deleted.  Both concerns should be balanced as well as possible.
+
+Avoid creating columns that are meant to be used for more than one function.  Ex: don't have a metadata column to manage rank of grouped rows, and then also use that value to determine if the row should be considered disabled.  Let columns do 1 thing at a time.
+
+Do NOT design tables to hold raw HTML or XML, unless that data is meant to be used purely for archiving.  The only times you should create columns to store raw code are when you need to log what a web service generated.  Do not ever expect to use a table column of raw XML/HTML for later parsing.  Parsing should be done in an app when your result was first generated, and results should then be organized and inserted into an easily searchable table.
+
+Avoid structuring records in a way that leads to a record referencing another record from within the same table.  If records need to have relationships between one-another, create a separate table to store just those relationships.  It is difficult to traverse a datatable to figure out relationship hierarchies when all you have are a single column of a large table to look at.  It gets even worse when the child and parent ID values don’t always flow in the same direction.  A separate table for relationships simplifies the process of figuring out the hierarchical structure of records, and you won’t have to figure out if the data in the self-referencing column can also point to records in another table. It also allows you the option of defining multiple relationships for each record.  You can also query the records’ relationships without having to resort to nested subqueries.
+
+Be careful to avoid over-normalization. While it makes sense to create a separate table to store additional data for an object in some cases, it can also make things more difficult sometimes.  To manage an indeterminate amount of lesser-used attributes for an object, create an ObjectAttributes table with a foreign key to the original object table.  But don’t place ALL of an object’s fields in that type of table.  Queries on the original object table will get faster if there are fewer columns in the table, but a much higher need to join tables can cause an overall drop in performance across multiple applications.  As a rule of thumb, if all objects MUST have a particular attribute (based on business rules), keep that attribute’s value as a column in the original object’s table.  Things can get unnecessarily complicated very quickly if you need to join to 2 or more tables, or you have to create multiple views, just to assemble the simplest representation of a data object/record.
+
+Storing raw SQL in a database table is bad form on multiple levels.  You'll never use execution plans on stored queries. You'll always have a more difficult time tracking down the actual syntax of an executed statement causing a problem. SQL records are too easily manipulated and can update frequently.  SQL query records can also be easy to lose, and it can be very difficult to track who/how/when/why they were modified; especially if done by a developer or dba with a database management tool.  Do everything you can to avoid this when building new processes.  Spend twice as much time in the design phase of the project, and research design options/best practices whenever necessary.
+
+NEVER BUILD VIEWS THAT DEPEND ON OTHER VIEWS (compound views).  Doing this makes debugging unnecessarily difficult and multiplies problems that result when an underlying view is changed.  Avoiding this will minimize the exposure of your procedures.  When building a view or a query, only use the actual tables and columns you need. Views can be optimized, but stored procedures also have their SQL optimized & execution plans built upon creation. Storage space is cheap; if you need a different view, create one.
+
+Never use * in an application SELECT query. Specify exact column names in your query, so the order of your return data columns never changes- regardless of any updates made to the table.  If column names change, your query will return a database error, instead of data that is in a format unexpected by your app db/business logic.  Otherwise the procedure will likely not compile anymore; if this happens, it should be seen by whoever would have made the original table change (within the database management tool).  Writing queries this way should cause your app to generate (and hopefully log) errors when data objects are changed, and can allow you to find the source of the problem without having to open your application's code.  Only select the data you need to minimize resource consumption on the database.
+
+Avoid the use of CASE statements in SQL whenever possible.  Often, CASE statements are used as conditional logic in a query’s WHERE clause to determine if records should be filtered using a certain column/input parameter. Instead, use a related input parameter with an added conditional.  Large CASE statements can turn a big procedure into a monster.  WHERE clauses are always evaluated in order, and will short-circuit when a true condition is found.
+ex: your SQL has an input parameter of
+@max_column1_value int = 0;
+You can create your WHERE clause with the following structure.  Your results will only filter on the related column if the filter value is specified as anything but 0.
+WHERE (@max_column1_value = 0 OR column1 <= @max_column1_value)
+AND …
+
+Application coding:
+Webforms sites: Only use .NET controls for form elements that require server side code.  Any page elements that will not change should be defined as html objects (<a href... vs <asp:hyperlink)
+
+Webforms sites: Wherever possible, avoid using viewstate.  It can lead to pages taking much longer to load when abused, and servers can generate errors if viewstate gets corrupted.  Viewstate has to be managed by the web servers' memory, and will generate errors if the server application pool runs low on RAM.  This can also lead to the web server performing badly when under a heavy user load.  You can get more out of a web server when individual users don’t need a lot of resources.  Set "enableviewstate=false" and/or “viewstatemode=disabled” on any .net control that does not need to hold a value across postbacks.  Forms that have to reload after actions are the only ones that should require this.  If a form submit always leads to another page, the controls should not need viewstate.
+
+Often, when attempting to implement something, try as much as possible to leverage system libraries/functions. Many times, functions don't need to be built; intellisense is your friend.  If unsure how to check if a function exists, and intellisense doesn't suggest anything, SEARCH THE INTERNET. "[C#] [VB].NET [what you're trying to do]" searches work wonders online.
+
+Webforms sites: Whenever static webform data must be displayed in a format that is different from a standard report table/grid, use a .NET repeater.  These render/load faster than gridviews/dataviews, and can be modified to display data in any html layout. Avoid using .net gridview controls whenever you can; large reports cause massive viewstates and slower performance.
+
+All top-level html form elements should have an ID property, just like .net controls are required to (Tables, divs, buttons, etc). Table rows and cells should only have IDs when necessary.  Static content (footer links, etc) should not need an ID specified, but it's best to have one defined anyway in case it ever needs to be manipulated by javascript/jquery in the future.
+
+To enhance readability, and to avoid having to flip to html view from server-side code, name form elements with standard prefixes.  Don't just name the save button "save".  All form elements of a certain type should share the same prefix. This enables the use of intellisense in server-side code windows, so you don't have to memorize exact form element names.  Ex: all button controls should have an id that starts with "btn____", all dropdownlists should have an id starting with "ddl____", etc.
+
+Form (less important because you should never have multiple forms on a page): frm____
+Checkbox: chk____
+Dropdown list: ddl____
+Radio: rdo____
+Label: lbl____
+Textbox: txt____
+Image: img____
+Hidden field: hdn____
+Calendar: cal____
+Panel: pnl____
+Upload file control: upl____
+Link button (.net control): lnkbtn____
+Listbox: lbox____
+Table: tbl____
+Repeater: rpt____
+Gridview: gv____
+Listview: lv____
+Datasource: ds____
+Datagrid: dg____
+Datalist: dlst____
+
+Do not place a comment on the same line as the code it applies to.  If the code line is long, or the other developer’s window is not horizontally large, these will not be visible.  These are also difficult to read, and can seriously mess with environment formatting of bracketed sections.  Place any comments in the line immediately above the code they apply to. Ex:
+//Convert date-time to desired format
+bidsolicitation.OPEN_DATE_TIME = ConvertStrDateToDate(b.OPEN_DATE_TIME, showDate: true, showTime: true);
+NOT
+bidsolicitation.OPEN_DATE_TIME = ConvertStrDateToDate(b.OPEN_DATE_TIME, showDate: true, showTime: true);//Convert date-time to desired format
+
+Assume all entered input will, at BEST, be the minimum quality specified by your validation rules.  Write robust validation, and LOTS of problems go away. Don’t even assume entered inputs will be valid text characters for your encoding/language.  Users WILL type emojis into your forms.
+
+Ensure all input parameters are in acceptable ranges before performing ANY actions.  Verify this on client side first so you can notify the user of any bad entries, THEN on the server side (ideally on BOTH, if not just server side).  
+
+Whenever possible, try to build your site so that it will still theoretically function with javascript turned off.  No matter what, you should build it so that if your form is submitted without any client-side restrictions or validation, you still return errors to the user instead of attempting to process input.  Client-side validation and form maxlength restrictions can be disabled easily by using form manipulation browser tools downloaded off the internet.
+
+Initialize all declared variables with constant values. Initialize numeric values as 0, boolean as false, string as "", date as #12:00:00 AM#, DateTime.MinValue or Now() (#12:00:00 AM# is the date equivalent of nothing in VB.NET).  Initialize all variables at the beginning of functions, before any logic takes place.  Variables should never require conditionals or be dependent on other values to be initialized.  If this is necessary, set the initial value with a constant first for the variable type, and then move the conditional logic statement to after variable declaration/initialization.
+
+Declared variables are easier to work with in code if a standard is used for naming. Local booleans should start with b, integers with n, strings with s, dates with dt, decimals with dec, etc. Global variables within the class should have "m" in front of those.  You can't use "g" for "global" because "gv" is used to prefix .net gridView control IDs, and "g" should be used for "GUID".  Use "i" to designate interfaces.  Use lowercase for the variable type prefix, and CamelCase for the rest of the variable name.  CamelCase allows easier readability if multiple words are used to name the variable.  To show differentiation, constants should be named using all UPPERCASE, and words separated with an underscore “_”.  This makes it easier to realize what types of values are expected in shared function parameters.  It also makes leveraging intellisense easier, so you don't have to memorize the name of the integer you're working with inside a code block.
+Ex:
+Dim mbPageInputValid as boolean = false
+Dim msUserName as string = ""
+Dim mdtLoginStamp as Date = DateTime.Now()
+Dim mdecInvoiceAmount as decimal = 0.0
+
+Use full words for variable names.  It can get very frustrating to try to read, let alone debug, code with a bunch of 1 or 2 letter variable names.  Intellisense should make the typist savings negligible.  Write descriptive, readable stuff.
+
+STRONGLY DEFINE ALL VARIABLES.  Don’t depend on runtime to correctly assume what type of object you’re dealing with when assigning values, referencing properties, or calling functions.  Don’t declare variables as object in VB.NET, or var in C#.NET.
+
+Separate database logic from business logic.  Create a database class or project for stored procedure uses, so that it can be reused later without having to rebuild it.
+
+Create database classes such that a known object is returned when no records are found, or if the stored procedure call fails. Ex: return an empty datatable/datarow on selects if no records found, an integer which corresponds to the number of records updated (0 if update failed), or the row ID value when an insert is done (0 or -1 if insert failed).
+
+Always try to use a stored procedure for any database actions (select, update, insert), and only if that is absolutely not possible (due to the requirements of page functionality), use direct SQL statements.  Avoid dynamic SQL use at all costs. The reasons for this are the same as what’s explained for SQL statements stored in data records, but you also then have to code to avoid the risk of SQL injection if you use dynamic SQL.
+
+If a SQL statement needs to be invoked by code, force the use of parameters for input.  This helps provide sanitization against SQL injection and removes the need to write logic to handle/translate special characters.
+
+Conditionals should NEVER compare to a static true or false in server-side code. If you need to do this, you didn't initialize your variable properly (and need to ensure it's not null/nothing).
+EX: if bVariable = true then
+should be: if bVariable then
+Don't ever create a conditional where nothing happens, only to have actions done in the "else" section.  Figure out how to write the conditional so you don't need an "else" section instead. This looks ridiculous when attempting to debug, and is not how code is meant to be written.
+Ex: If bVariable then
+'do nothing
+Else
+'several lines of code here
+...
+End If
+For info on how to write a conditional that is the opposite of what you know how to write, see:
+http://www.regentsprep.org/Regents/math/geometry/GP1/negatecompound.htm
+You can also do a search for deMorgan's conditional laws.
+
+All "if" logic should utilize short circuiting.  VB.NET will attempt to evaluate ALL conditionals unless ANDALSO is used instead of AND,  and ORELSE is used instead of OR.  Using these avoids the need to nest multiple if statements back to back, which looks complicated and sloppy. C# will short-circuit automatically; there is no need to worry about this issue unless you’re using VB.NET.
+Ex: If bAFlag then
+If bBFlag then
+If bCFlag then
+If not bDFlag then
+                         	nCount += 1
+End if
+End if
+End if
+  End if
+Should be: If bAFlagA andalso bBFlag andalso bCFlag andalso not bDFlag then
+…
+
+If you have a single variable that has multiple conditionals, and they are all comparing to various static values, consider rewriting the if/else with a select statement.  In VB.NET you can stack multiple static values in a single select case, which becomes a lot easier to read.
+Ex:
+select case nPageNumber
+   	case 3,5,15,30,26
+'do something here
+   	case 2,4,6,11
+'do something for similar cases here
+   	case else  	
+'else case actions here
+end select
+
+DO NOT write html code and DEFINITELY DO NOT write javascript code to the page from within codebehind.  This makes debugging difficult, and is a mess of logical layers.  Presentation layer logic should be handled by static javascript functions. If the page needs different javascript logic depending on the situation, and that requires different server-side process flows, then the page may need to be split into 2 or more pages; 1 page for each possible process flow. Better to instead bind a javascript function call with an ID parameter for each record (when creating an href), or to attach javascript actions to the records in the page onload via jquery.  Or just connect different javascript function names based on business logic in the related object's databind.
+
+DO NOT create loops to execute when only a single member of a collection is needed.  Find a way to access the needed element of the collection directly.
+Conditionals that lead to only 1 executed statement should be kept on a single line if possible.
+Ex:
+If oContact.Address1.Length > 0 Then
+   	sbAddress.Append(oContact.Address1 & sEndOfLine)
+End If
+Should be:
+If oContact.Address1.Length > 0 Then sbAddress.Append(oContact.Address1 & sEndOfLine)
+
+DO NOT use global variables in web page classes.  Values stored in global class variables can be shared across user requests if the disposal of resources hasn’t happened by the end of your page’s current thread processing.  Instead, store any data that needs to exist for the current page request in HttpContext.Current.Items[].  This can be used like session but is more disposable.  You’ll need to recast anything stored here back into the proper object type before you can use it. In high volume scenarios, objects need to be created/loaded with thread-safety in mind.  This is done by leveraging Lazy<object> loading and/or ThreadLocal<object> declarations.
+
+Whenever you use a .net control that requires codebehind to handle actions (button click, dropdown list value change, etc), make sure that the codebehind method name lines up with the name of the involved control.
+Ex: button named btnSubmit -> codebehind function name = protected void btnSubmit_Click
+You can have functions that don’t match up with the assumed naming conventions, but these can inexplicably run into issues in certain situations; especially if the browser has problems with .net’s form submission javascript.  Avoid the possible headaches.
+
+Place try/catch around all logic, and have the catch block log both the exception message & FULL STACKTRACE to the database before exiting the sub/function.  If the database is unavailable, and that’s the cause of the error, log the error elsewhere or email the error to a developer mailbox.  If the logic is in a function that should return a value, return an empty base value of the proper type. Ex: Return "", Return 0, Return false, etc.  DO NOT THROW EXCEPTIONS UP- this makes error investigation more difficult than necessary, because you'll have to look through a stacktrace only to find an inner exception, which may or may not have a stacktrace with useful debug info.  Throwing exceptions up also requires all calling logic to handle not just its own exceptions, but your function's as well.  Every sub and function should be responsible for its own exceptions. This minimizes the depth of your stacktraces, and the time you need to spend to figure out what and why something went wrong.
+
+Build code as if you were creating something out of blocks.  Divide functionality into self-contained blocks that can be built independently of outside rules/logic.  Create each block so that it can be plugged into another app without being re-coded.  Make each block bulletproof.  Make minimal assumptions within each block.  Build it once, build it right, and re-use it whenever possible.  Each block will take longer to build, but you will know that each block is bulletproof, and you'll worry less about lower level coding as time goes on- while your stockpile grows. The simplest way to make something bulletproof is to build it out of bulletproof parts.
+
+Build database tables and stored procedure blocks -> Build database application code block -> Build business layer code block -> Build presentation/web page behavior block -> Build javascript page interface blocks
+
+
+Design/Interface/Workflow:
+Don’t push new code to production during high user volume, or when support is not available.  This usually means no code pushes on Fridays.  Do everything you can to avoid having business announce a new application/site/feature to your audience before it has been completely built.  Do not let business shove your back against the wall, because even the best-case scenario is a successful deployment after an extremely brutal period of development.  Do not let business put their toddler in the street, even if you CAN stop a speeding bus with your bare hands.
+
+Perform a miracle once, and you’re a savior.  Do it twice, you’re a caterer.
+
+Don’t let business make IT decisions.  Let business make all the application behavior requests they want, but don’t let them tell you how you’re supposed to design the back-end, or what technologies you’re supposed to use.  They aren’t really going to care; they won’t be supporting the app. Any request business makes for certain structures or technologies should be considered a suggestion, unless these are the only tools business has available.  If that is the case, explain to business what long-term sustainable technologies you’d prefer to use, and why.  Technology and data structure decisions should be left to IT management and/or database administrators.  If business absolutely demands certain technologies or structures are used, include any additional time needed into your development hour estimate.  Business rarely loves a technology or structure so much that it will accept a longer timeline, higher cost, or lower reliability.  Newer structures and technologies should always be researched, and future project development/support savings should be communicated to business wherever they may be found.
+
+Many times you're a problem solver first, a coder second.  That's what business asks us to do: solve problems.  You’ll find many times that business is willing to modify a requested workflow slightly if it means the entire process is easier to understand for users.  When a workflow process can be simplified, implementation can be made a lot easier.  Many development headaches can be eliminated by cleanly reorganizing a workflow.
+
+Don’t try to force business decisions as a member of IT.  Don’t push business into making certain decisions based on the limitations of your existing skillset.  If you can’t do something, and are unwilling/unable to learn how, tell them that directly.  Don’t tell them “it can’t be done”- tell them “I can’t/won’t do it”.  Own up to what you don’t know.  You should be willing to learn how to do new things when necessary to satisfy business requirements.  Do not try to get business requirements removed because you don’t know how to satisfy them with your current skillset.  Do help business to simplify their processes.  Do not try to convince them they should use something that doesn’t solve their original problem(s), just because your solution would be easier for you to create.  Business should not have to jump through hoops in their workflows because you’re unwilling or unable to give them what they really want.
+
+Don't ever wash your hands of responsibility if a problem exists in something you didn’t build, but have to interface with/depend on.  Nothing is a black box.  Don't code around another component's failures.  Fix the failures in the component yourself if nobody else will.  Don't allow management to say "we don't have time to fix that component".  If components can't/won't be updated, new development should be done without them.  Do not chain good code to bad; when your app fails because of a problem in a component, you will still be held responsible for the failure, because whoever built the bad component is likely working somewhere else (if they’re working at all).  Your application is only as reliable as its weakest component.  If you aren’t allowed to fix/update necessary components, add the time needed to rebuild them as part of your project’s hour estimate.  Do it right or do it forever.
+
+Do everything you can to avoid having "click here" links.  They insult the user, and make both you AND the business look like idiots.  Have business rewrite your copy so your organization doesn't show its grey hair through the browser.  Make minimal assumptions about the user's capability with the app, but don't design it believing that you have to explain the fundamentals of the internet.  People who don't know the basics of how to use the internet are not the customers who should be using your process. Request that business write your copy and/or signoff on it whenever possible. You’re not a copy editor, or a marketer, or a customer service person - make business people do that, so you can spend your time doing what they can’t.
